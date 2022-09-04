@@ -57,6 +57,9 @@ static globals *pglobal;
 extern context servers[MAX_OUTPUT_PLUGINS];
 int piggy_fine = 2; // FIXME make it command line parameter
 
+#ifdef HTTP_MANAGEMENT
+_client_infos client_infos;
+#endif
 /******************************************************************************
 Description.: initializes the iobuffer structure properly
 Input Value.: pointer to already allocated iobuffer
@@ -305,7 +308,7 @@ int unescape(char *string)
     return 0;
 }
 
-#ifdef MANAGMENT
+#ifdef HTTP_MANAGEMENT
 
 /******************************************************************************
 Description.: Adds a new client information struct to the ino list.
@@ -357,8 +360,12 @@ Input Value.: Client IP address as a string
 Return Value: If a frame was served to it within the specified interval it returns 1
               If not it returns with 0
 ******************************************************************************/
-int check_client_status(client_info *client)
+int check_client_ratelimit(client_info *client, int ratelimit)
 {
+    // Dip out if ratelimit is disabled (less then 1 ms)
+    if (ratelimit < 1){
+        return 0;
+    }
     unsigned int i = 0;
     pthread_mutex_lock(&client_infos.mutex);
     for (; i<client_infos.client_count; i++) {
@@ -369,7 +376,7 @@ int check_client_status(client_info *client)
             msec  =(tim.tv_sec - client_infos.infos[i]->last_take_time.tv_sec)*1000;
             msec +=(tim.tv_usec - client_infos.infos[i]->last_take_time.tv_usec)/1000;
             DBG("diff: %ld\n", msec);
-            if ((msec < 1000) && (msec > 0)) { // FIXME make it parameter
+            if ((msec < ratelimit) && (msec > 0)) {
                 DBG("CHEATER\n");
                 pthread_mutex_unlock(&client_infos.mutex);
                 return 1;
@@ -428,7 +435,7 @@ void send_snapshot(cfd *context_fd, int input_number)
 
     pthread_mutex_unlock(&pglobal->in[input_number].db);
 
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     update_client_timestamp(context_fd->client);
     #endif
 
@@ -509,7 +516,7 @@ void send_stream(cfd *context_fd, int input_number)
 
         pthread_mutex_unlock(&pglobal->in[input_number].db);
 
-        #ifdef MANAGMENT
+        #ifdef HTTP_MANAGEMENT
         update_client_timestamp(context_fd->client);
         #endif
 
@@ -607,7 +614,7 @@ void send_stream_wxp(cfd *context_fd, int input_number)
         /* copy v4l2_buffer timeval to user space */
         timestamp = pglobal->in[input_number].timestamp;
 
-        #ifdef MANAGMENT
+        #ifdef HTTP_MANAGEMENT
         update_client_timestamp(context_fd->client);
         #endif
 
@@ -675,6 +682,13 @@ void send_error(int fd, int which, char *message)
                 STD_HEADER \
                 "\r\n" \
                 "403: Forbidden!\r\n" \
+                "%s", message);
+        } else if (which == 429) {
+        sprintf(buffer, "HTTP/1.0 429 Too Many Requests\r\n" \
+                "Content-type: text/plain\r\n" \
+                STD_HEADER \
+                "\r\n" \
+                "429: Too Many Requests!\r\n" \
                 "%s", message);
     } else {
         sprintf(buffer, "HTTP/1.0 501 Not Implemented\r\n" \
@@ -1067,11 +1081,11 @@ void *client_thread(void *arg)
     if(strstr(buffer, "GET /?action=snapshot") != NULL) {
         req.type = A_SNAPSHOT;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
+        #ifdef HTTP_MANAGEMENT
+        if (check_client_ratelimit(lcfd.client, lcfd.pc->conf.ratelimit)) {
             req.type = A_UNKNOWN;
             lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
+            send_error(lcfd.fd, 429, "rate limit exceeded");
             query_suffixed = 0;
         }
         #endif
@@ -1079,11 +1093,11 @@ void *client_thread(void *arg)
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".jpg") != NULL)) {
         req.type = A_SNAPSHOT_WXP;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
+        #ifdef HTTP_MANAGEMENT
+        if (check_client_ratelimit(lcfd.client, lcfd.pc->conf.ratelimit)) {
             req.type = A_UNKNOWN;
             lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
+            send_error(lcfd.fd, 429, "rate limit exceeded");
             query_suffixed = 0;
         }
         #endif
@@ -1091,22 +1105,22 @@ void *client_thread(void *arg)
     } else if(strstr(buffer, "POST /stream") != NULL) {
         req.type = A_STREAM;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
+        #ifdef HTTP_MANAGEMENT
+        if (check_client_ratelimit(lcfd.client, lcfd.pc->conf.ratelimit)) {
             req.type = A_UNKNOWN;
             lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
+            send_error(lcfd.fd, 429, "rate limit exceeded");
             query_suffixed = 0;
         }
         #endif
     } else if(strstr(buffer, "GET /?action=stream") != NULL) {
         req.type = A_STREAM;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
+        #ifdef HTTP_MANAGEMENT
+        if (check_client_ratelimit(lcfd.client, lcfd.pc->conf.ratelimit)) {
             req.type = A_UNKNOWN;
             lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
+            send_error(lcfd.fd, 429, "rate limit exceeded");
             query_suffixed = 0;
         }
         #endif
@@ -1114,11 +1128,11 @@ void *client_thread(void *arg)
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".mjpg") != NULL)) {
         req.type = A_STREAM_WXP;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
+        #ifdef HTTP_MANAGEMENT
+        if (check_client_ratelimit(lcfd.client, lcfd.pc->conf.ratelimit)) {
             req.type = A_UNKNOWN;
             lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
+            send_error(lcfd.fd, 429, "rate limit exceeded");
             query_suffixed = 0;
         }
         #endif
@@ -1162,7 +1176,7 @@ void *client_thread(void *arg)
         query_suffixed = 255;
     } else if(strstr(buffer, "GET /program.json") != NULL) {
         req.type = A_PROGRAM_JSON;
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     } else if(strstr(buffer, "GET /clients.json") != NULL) {
         req.type = A_CLIENTS_JSON;
     #endif
@@ -1351,7 +1365,7 @@ void *client_thread(void *arg)
         DBG("Request for the program descriptor JSON file\n");
         send_program_JSON(lcfd.fd);
         break;
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     case A_CLIENTS_JSON:
         DBG("Request for the clients JSON file\n");
         send_clients_JSON(lcfd.fd);
@@ -1482,7 +1496,7 @@ void *server_thread(void *arg)
     for(i = 0; i < MAX_SD_LEN; i++)
         pcontext->sd[i] = -1;
 
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     if (pthread_mutex_init(&client_infos.mutex, NULL)) {
         perror("Mutex initialization failed");
         exit(EXIT_FAILURE);
@@ -1586,7 +1600,7 @@ void *server_thread(void *arg)
                     DBG("serving client: %s\n", name);
                 }
 
-                #if defined(MANAGMENT)
+                #if defined(HTTP_MANAGEMENT)
                 pcfd->client = add_client(name);
                 #endif
 
@@ -2030,7 +2044,7 @@ void send_output_JSON(int fd, int input_number)
     }
 }
 
-#ifdef MANAGMENT
+#ifdef HTTP_MANAGEMENT
 void send_clients_JSON(int fd)
 {
     char buffer[BUFFER_SIZE*16] = {0}; // FIXME do reallocation if the buffer size is small

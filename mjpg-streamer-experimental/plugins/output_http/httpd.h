@@ -20,6 +20,9 @@
 #                                                                              #
 *******************************************************************************/
 
+#ifndef HTTPD_H_
+#define HTTPD_H_
+
 #define IO_BUFFER 256
 #define BUFFER_SIZE 1024
 
@@ -94,7 +97,7 @@ typedef enum {
     A_INPUT_JSON,
     A_OUTPUT_JSON,
     A_PROGRAM_JSON,
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     A_CLIENTS_JSON
     #endif
 } answer_t;
@@ -124,6 +127,7 @@ typedef struct {
     char *credentials;
     char *www_folder;
     char nocommands;
+    int ratelimit;
 } config;
 
 /* context of each server thread */
@@ -138,7 +142,7 @@ typedef struct {
 } context;
 
 
-#if defined(MANAGMENT)
+#if defined(HTTP_MANAGEMENT)
 /*
  * this struct is used to hold information from the clients address, and last picture take time
  */
@@ -148,11 +152,11 @@ typedef struct _client_info {
     struct timeval last_take_time;
 } client_info;
 
-struct {
+typedef struct _client_infos {
     client_info **infos;
     unsigned int client_count;
     pthread_mutex_t mutex;
-} client_infos;
+} _client_infos;
 
 #endif
 
@@ -163,7 +167,7 @@ struct {
 typedef struct {
     context *pc;
     int fd;
-    #ifdef MANAGMENT
+    #ifdef HTTP_MANAGEMENT
     client_info *client;
     #endif
 } cfd;
@@ -178,17 +182,14 @@ void send_input_JSON(int fd, int plugin_number);
 void send_program_JSON(int fd);
 void check_JSON_string(char *source, char *destination);
 
-#ifdef MANAGMENT
+#ifdef HTTP_MANAGEMENT
 client_info *add_client(char *address);
-int check_client_status(client_info *client);
+int check_client_ratelimit(client_info *client, int ratelimit);
 void update_client_timestamp(client_info *client);
 void send_clients_JSON(int fd);
 #endif
 
-
-
-
-
+#endif  // HTTPD_H_
 
 
 
