@@ -22,6 +22,9 @@
 # endif
 #endif
 
+#define CL_TARGET_OPENCL_VERSION 120
+#include <CL/cl.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,6 +69,7 @@ extern "C" {
    EAPI void          epeg_file_output_set           (Epeg_Image *im, const char *file);
    EAPI void          epeg_memory_output_set         (Epeg_Image *im, unsigned char **data, int *size);
    EAPI int           epeg_encode                    (Epeg_Image *im);
+   EAPI int           epeg_encode_opencl             (Epeg_Image *im, cl_context *contextRef, cl_kernel *kernelRef, cl_command_queue *queueRef);
    EAPI int           epeg_trim                      (Epeg_Image *im);
    EAPI void          epeg_close                     (Epeg_Image *im);
 

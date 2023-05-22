@@ -5,6 +5,7 @@
 static Epeg_Image   *_epeg_open_header         (Epeg_Image *im);
 static int           _epeg_decode              (Epeg_Image *im);
 static int           _epeg_scale               (Epeg_Image *im);
+static int           _epeg_scale_opencl        (Epeg_Image *im, cl_context context, cl_kernel kernel, cl_command_queue queue);
 static int           _epeg_decode_for_trim     (Epeg_Image *im);
 static int           _epeg_trim                (Epeg_Image *im);
 static int           _epeg_encode              (Epeg_Image *im);
@@ -729,6 +730,23 @@ epeg_encode(Epeg_Image *im)
    return 0;
 }
 
+EAPI int
+epeg_encode_opencl(Epeg_Image *im, cl_context *contextRef, cl_kernel *kernelRef, cl_command_queue *queueRef)
+{
+   int ret;
+   cl_context context = *contextRef;
+   cl_kernel kernel = *kernelRef;
+   cl_command_queue queue = *queueRef;
+
+   if ((ret = _epeg_decode(im)) != 0)
+     return (ret == 2 ? 4 : 3);
+   if (_epeg_scale_opencl(im,context,kernel,queue) != 0)
+     return 1;
+   if (_epeg_encode(im) != 0)
+     return 2;
+   return 0;
+}
+
 /**
  * FIXME: Document this
  * @param im A handle to an opened Epeg image.
@@ -1036,6 +1054,83 @@ _epeg_scale(Epeg_Image *im)
 	     dst += im->in.jinfo.output_components;
 	  }
      }
+   return 0;
+}
+
+static int
+_epeg_scale_opencl(Epeg_Image *im, cl_context context, cl_kernel kernel, cl_command_queue queue)
+{
+   unsigned char *dst, *row, *src;
+   int            x, y, w, h, i;
+   
+   if ((im->in.w == im->out.w) && (im->in.h == im->out.h)) return 0;
+   if (im->scaled) return 0;
+   
+   if ((im->out.w < 1) || (im->out.h < 1)) return 0;
+   
+   im->scaled = 1;
+   w = im->out.w;
+   h = im->out.h;
+
+   cl_int err;
+   cl_int pattern = 0;
+
+   // Allocate OpenCL memory buffers
+   cl_mem srcBufferScale = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,
+                               im->in.jinfo.output_height * im->in.jinfo.output_width * im->in.jinfo.output_components * sizeof(unsigned char),
+                               im->pixels, &err);
+   if (err != CL_SUCCESS) {
+       perror("Failed to create source buffer");
+       return -1;
+   }
+
+   cl_mem dstBufferScale = clCreateBuffer(context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,
+                               im->out.w * im->out.h * im->in.jinfo.output_components * sizeof(unsigned char),
+                               im->pixels, &err);
+   if (err != CL_SUCCESS) {
+       perror("Failed to create destination buffer");
+       clReleaseMemObject(srcBufferScale);
+       return -1;
+   }
+
+   err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &srcBufferScale);
+   err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &dstBufferScale);
+   err |= clSetKernelArg(kernel, 2, sizeof(int), &im->in.jinfo.output_components);
+   err |= clSetKernelArg(kernel, 3, sizeof(int), &im->in.jinfo.output_width);
+   err |= clSetKernelArg(kernel, 4, sizeof(int), &im->in.jinfo.output_height);
+   err |= clSetKernelArg(kernel, 5, sizeof(int), &im->out.w);
+   err |= clSetKernelArg(kernel, 6, sizeof(int), &im->out.h);
+   if (err != CL_SUCCESS) {
+       printf("Failed to set kernel arguments\n");
+       clReleaseMemObject(srcBufferScale);
+       clReleaseMemObject(dstBufferScale);
+       return 1;
+   }
+
+   // Define global and local work sizes
+   size_t global_work_size[2] = {im->out.w, im->out.h};
+
+   // Enqueue kernel
+   err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global_work_size, NULL, 0, NULL, NULL);
+   if (err != CL_SUCCESS) {
+       printf("Error enqueuing kernel\n");
+       clReleaseMemObject(srcBufferScale);
+       clReleaseMemObject(dstBufferScale);
+       return -1;
+   }
+
+   // Transfer data from device to host
+   err = clEnqueueReadBuffer(queue, dstBufferScale, CL_TRUE, 0, im->out.w * im->out.h * im->in.jinfo.output_components * sizeof(unsigned char), im->pixels, 0, NULL, NULL);
+   if (err != CL_SUCCESS) {
+       printf("Error transferring data from dst buffer\n");
+       clReleaseMemObject(srcBufferScale);
+       clReleaseMemObject(dstBufferScale);
+       return -1;
+   }
+
+   clReleaseMemObject(srcBufferScale);
+   clReleaseMemObject(dstBufferScale);
+
    return 0;
 }
 

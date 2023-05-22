@@ -50,6 +50,7 @@ static int plugin_number;
 
 void *worker_thread(void *);
 void worker_cleanup(void *);
+int init_opencl();
 
 #define INPUT_PLUGIN_NAME "HTTP Input plugin"
 
@@ -94,6 +95,7 @@ int input_init(input_parameter *param, int plugin_no)
         IPRINT("rescale width....: %d\n", proxy.width);
         IPRINT("rescale height...: %d\n", proxy.height);
         IPRINT("rescale quality..: %d\n", proxy.quality);
+        IPRINT("rescale opencl...: %d\n", proxy.opencl);
     }
 
     return 0;
@@ -155,7 +157,11 @@ void on_image_received(char * data, int length){
                 epeg_memory_output_set(raw_img, &(pglobal->in[plugin_number].buf), &(pglobal->in[plugin_number].size));
 
                 /* apply the transformations and write to the output buffer */
-                epeg_encode(raw_img);
+                if(proxy.opencl == 1 && proxy.cl_obj.err == CL_SUCCESS) {
+                    epeg_encode_opencl(raw_img, &proxy.cl_obj.context, &proxy.cl_obj.kernel_scale, &proxy.cl_obj.queue);
+                } else {
+                    epeg_encode(raw_img);
+                }
 
                 /* free the internal allocations of the epeg library */
                 epeg_close(raw_img);
@@ -171,11 +177,101 @@ void on_image_received(char * data, int length){
 
 }
 
+int init_opencl()
+{
+    IPRINT("Start initial opencl\n");
+
+    // Create OpenCL program
+    const char* source =
+        "__kernel void scale(__global unsigned char* src, __global unsigned char* dst, const int output_components, \n"
+        "const int input_width, const int input_height, const int out_w, const int out_h) {\n"
+        "   int x = get_global_id(0);\n"
+        "   int y = get_global_id(1);\n"
+        "   if (x >= input_width || y >= input_height) return;\n"
+        "   unsigned char* row = src + (((y * input_height) / out_h) * output_components * input_width);\n"
+        "   unsigned char* pixel = dst + (y * output_components * input_width) + (x * output_components);\n"
+        "   unsigned char* src_pixel = row + (((x * input_width) / out_w) * output_components);\n"
+        "   for (int i = 0; i < output_components; i++) {\n"
+        "       pixel[i] = src_pixel[i];\n"
+        "   }\n"
+        "}\n";
+
+    // Get OpenCL platform
+    proxy.cl_obj.err = clGetPlatformIDs(1, &proxy.cl_obj.platform, &proxy.cl_obj.num_platforms);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        return -1;
+    }
+
+    // Get device
+    proxy.cl_obj.err = clGetDeviceIDs(proxy.cl_obj.platform, CL_DEVICE_TYPE_GPU, 1, &proxy.cl_obj.device, &proxy.cl_obj.num_devices);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        return -1;
+    }
+
+    // Create context
+    proxy.cl_obj.context = clCreateContext(NULL, 1, &proxy.cl_obj.device, NULL, NULL, &proxy.cl_obj.err);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        return -1;
+    }
+
+    // Create command queue
+    proxy.cl_obj.queue = clCreateCommandQueue(proxy.cl_obj.context, proxy.cl_obj.device, 0, &proxy.cl_obj.err);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        clReleaseContext(proxy.cl_obj.context);
+
+        return -1;
+    }
+
+    // Build the OpenCL program
+    proxy.cl_obj.program = clCreateProgramWithSource(proxy.cl_obj.context, 1, &source, NULL, &proxy.cl_obj.err);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        IPRINT("Error creating program\n");
+        clReleaseCommandQueue(proxy.cl_obj.queue);
+        clReleaseContext(proxy.cl_obj.context);
+        return -1;
+    }
+
+    // Build the program
+    proxy.cl_obj.err = clBuildProgram(proxy.cl_obj.program, 1, &proxy.cl_obj.device, NULL, NULL, NULL);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        IPRINT("Error building program\n");
+        clReleaseProgram(proxy.cl_obj.program);
+        clReleaseCommandQueue(proxy.cl_obj.queue);
+        clReleaseContext(proxy.cl_obj.context);
+        return -1;
+    }
+
+    // Create kernel
+    proxy.cl_obj.kernel_scale = clCreateKernel(proxy.cl_obj.program, "scale", &proxy.cl_obj.err);
+    if (proxy.cl_obj.err != CL_SUCCESS) {
+        // Handle error
+        IPRINT("Error creating kernel\n");
+        clReleaseProgram(proxy.cl_obj.program);
+        clReleaseCommandQueue(proxy.cl_obj.queue);
+        clReleaseContext(proxy.cl_obj.context);
+        return -1;
+    }
+
+    return 0;
+}
+
 void *worker_thread(void *arg)
 {
 
     /* set cleanup handler to cleanup allocated resources */
     pthread_cleanup_push(worker_cleanup, NULL);
+
+    if(proxy.opencl == 1) {
+        IPRINT("Use OpenCL with rescale image\n");
+        if(init_opencl() != 0) {
+            IPRINT("failed to initial opencl\n");
+        }
+    }
 
     proxy.on_image_received = on_image_received;
     proxy.should_stop =  & pglobal->stop;
@@ -199,6 +295,13 @@ void worker_cleanup(void *arg)
     if(!first_run) {
         DBG("already cleaned up resources\n");
         return;
+    }
+
+    if(proxy.opencl == 1 && proxy.cl_obj.err == CL_SUCCESS) {
+        clReleaseKernel(proxy.cl_obj.kernel_scale);
+        clReleaseProgram(proxy.cl_obj.program);
+        clReleaseCommandQueue(proxy.cl_obj.queue);
+        clReleaseContext(proxy.cl_obj.context);
     }
 
     first_run = 0;

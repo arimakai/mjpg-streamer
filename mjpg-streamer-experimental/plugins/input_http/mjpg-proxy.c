@@ -66,6 +66,7 @@ void init_mjpg_proxy(struct extractor_state * state){
     state->width = 0;
     state->height = 0;
     state->quality = 75;
+    state->opencl = 0;
 
     init_extractor_state(state);
 }
@@ -152,6 +153,7 @@ fprintf(stderr, " --------------------------------------------------------------
                 " [-x | --width ]..........: width of frame (to rescale), default disabled\n" \
                 " [-y | --height]..........: height of frame (to rescale), default disabled \n"\
                 " [-q | --quality].........: set JPEG quality 0-100 (to rescale), default disabled \n"\
+                " [-c | --opencl]..........: set opencl to rescale, default disabled \n"\
                 " ---------------------------------------------------------------\n", program_name);
 }
 // TODO: this must be reworked, too. I don't know how
@@ -170,11 +172,12 @@ int parse_cmd_line(struct extractor_state * state, int argc, char * argv []) {
             {"width", required_argument, 0, 'x'},
             {"height", required_argument, 0, 'y'},
             {"quality", required_argument, 0, 'q'},
+            {"opencl", required_argument, 0, 'c'},
             {0,0,0,0}
         };
 
         int index = 0, c = 0;
-        c = getopt_long_only(argc,argv, "hvH:P:p:x:y:q:", long_options, &index);
+        c = getopt_long_only(argc,argv, "hvH:P:p:x:y:q:c:", long_options, &index);
 
         if (c==-1) break;
 
@@ -212,6 +215,9 @@ int parse_cmd_line(struct extractor_state * state, int argc, char * argv []) {
                 break;
             case 'q' :
                 state->quality = atoi(optarg);
+                break;
+            case 'c' :
+                state->opencl = atoi(optarg);
                 break;
             }
     }

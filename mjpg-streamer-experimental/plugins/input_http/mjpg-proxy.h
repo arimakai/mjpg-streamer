@@ -23,6 +23,8 @@
 
 #include "misc.h"
 
+#define CL_TARGET_OPENCL_VERSION 120
+#include <CL/cl.h>
 
 #ifndef DBG
 #ifdef DEBUG
@@ -32,7 +34,7 @@
 #endif
 #endif
 
-#define BUFFER_SIZE 1024 * 512
+#define BUFFER_SIZE 1024 * 1024
 
 struct extractor_state {
     
@@ -58,6 +60,19 @@ struct extractor_state {
     int * should_stop;
     void (*on_image_received)(char * data, int length);
         
+    int opencl;
+    struct {
+        cl_int err;
+        cl_platform_id platform;
+        cl_device_id device;
+        cl_context context;
+        cl_command_queue queue;
+        cl_uint num_platforms;
+        cl_uint num_devices;
+        cl_program program;
+        cl_kernel kernel_scale;
+    } cl_obj;
+
 };
 
 void init_mjpg_proxy(struct extractor_state  * state);
